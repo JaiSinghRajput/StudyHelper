@@ -1,7 +1,13 @@
 [project]
 name = "engine"
 version = "0.1.0"
-description = "Add your description here"
+description = "Study Material Generator - Creates structured learning materials using AI and web research"
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = []
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.0.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "tavily-python>=0.2.0",
+    "python-dotenv>=1.0.0",
+]
