@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { authService } from '../services/auth.service';
 import { logger } from '../utils/logger';
+import { authMiddleware } from '../middleware/auth';
 
-const router = Router();
+const router: Router = Router();
 
 interface RegisterRequest {
   username: string;
@@ -169,7 +170,7 @@ router.post(
  * POST /auth/validate
  * Validate current access token (requires auth)
  */
-router.post('/validate', (req: Request, res: Response) => {
+router.post('/validate', authMiddleware, (req: Request, res: Response) => {
   try {
     if (!req.user) {
       res.status(401).json({

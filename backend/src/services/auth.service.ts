@@ -3,59 +3,29 @@ import { jwtService } from '../utils/jwt';
 import { logger } from '../utils/logger';
 import { User, AuthPayload, TokenResponse } from '../types';
 import { v4 as uuidv4 } from 'uuid';
+import { getDb } from '../config/database';
 
-// In-memory user database (replace with real DB in production)
-const users: Map<string, User> = new Map();
-const emailIndex: Map<string, string> = new Map();
-
-// Demo users
-const initializeDemoUsers = async () => {
-  const demoUsers = [
-    {
-      username: 'admin',
-      email: 'admin@example.com',
-      password: 'admin123',
-      role: 'admin' as const,
-    },
-    {
-      username: 'user',
-      email: 'user@example.com',
-      password: 'user123',
-      role: 'user' as const,
-    },
-    {
-      username: 'premium',
-      email: 'premium@example.com',
-      password: 'premium123',
-      role: 'premium' as const,
-    },
-  ];
-
-  for (const demoUser of demoUsers) {
-    const id = uuidv4();
-    const hashedPassword = await cryptoService.hashPassword(demoUser.password);
-
-    const user: User = {
-      id,
-      username: demoUser.username,
-      email: demoUser.email,
-      password: hashedPassword,
-      role: demoUser.role,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    users.set(id, user);
-    emailIndex.set(demoUser.email, id);
-  }
-
-  logger.info('Demo users initialized');
+type UserRow = {
+  id: string;
+  username: string;
+  email: string;
+  password: string;
+  role: 'user' | 'admin' | 'premium';
+  created_at: string;
+  updated_at: string;
 };
 
-// Initialize on module load
-initializeDemoUsers().catch((error) => {
-  logger.error('Failed to initialize demo users', error);
-});
+function toUser(row: UserRow): User {
+  return {
+    id: row.id,
+    username: row.username,
+    email: row.email,
+    password: row.password,
+    role: row.role,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
+}
 
 export class AuthService {
   async register(
@@ -64,13 +34,16 @@ export class AuthService {
     password: string
   ): Promise<Omit<User, 'password'>> {
     try {
-      // Check if user already exists
-      if (emailIndex.has(email)) {
+      const db = await getDb();
+      const existing = await db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', email);
+
+      if (existing) {
         throw new Error('Email already registered');
       }
 
       const userId = uuidv4();
       const hashedPassword = await cryptoService.hashPassword(password);
+      const now = new Date();
 
       const user: User = {
         id: userId,
@@ -78,12 +51,21 @@ export class AuthService {
         email,
         password: hashedPassword,
         role: 'user',
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: now,
+        updatedAt: now,
       };
 
-      users.set(userId, user);
-      emailIndex.set(email, userId);
+      await db.run(
+        `INSERT INTO users (id, username, email, password, role, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        user.id,
+        user.username,
+        user.email,
+        user.password,
+        user.role,
+        user.createdAt.toISOString(),
+        user.updatedAt.toISOString()
+      );
 
       logger.info(`User registered: ${email}`);
 
@@ -97,17 +79,14 @@ export class AuthService {
 
   async login(email: string, password: string): Promise<TokenResponse> {
     try {
-      const userId = emailIndex.get(email);
+      const db = await getDb();
+      const row = await db.get<UserRow>('SELECT * FROM users WHERE email = ?', email);
 
-      if (!userId) {
+      if (!row) {
         throw new Error('Invalid email or password');
       }
 
-      const user = users.get(userId);
-
-      if (!user) {
-        throw new Error('Invalid email or password');
-      }
+      const user = toUser(row);
 
       const isPasswordValid = await cryptoService.comparePassword(
         password,
@@ -146,13 +125,16 @@ export class AuthService {
 
   async refreshAccessToken(refreshToken: string): Promise<TokenResponse> {
     try {
+      const db = await getDb();
       const decoded = jwtService.verifyRefreshToken(refreshToken);
 
-      const user = users.get(decoded.userId);
+      const row = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', decoded.userId);
 
-      if (!user) {
+      if (!row) {
         throw new Error('User not found');
       }
+
+      const user = toUser(row);
 
       const payload: AuthPayload = {
         userId: user.id,
@@ -182,11 +164,14 @@ export class AuthService {
 
   async getUserById(userId: string): Promise<Omit<User, 'password'> | null> {
     try {
-      const user = users.get(userId);
+      const db = await getDb();
+      const row = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', userId);
 
-      if (!user) {
+      if (!row) {
         return null;
       }
+
+      const user = toUser(row);
 
       const { password: _, ...userWithoutPassword } = user;
       return userWithoutPassword;
@@ -201,15 +186,24 @@ export class AuthService {
     newRole: 'user' | 'admin' | 'premium'
   ): Promise<Omit<User, 'password'>> {
     try {
-      const user = users.get(userId);
+      const db = await getDb();
+      const row = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', userId);
 
-      if (!user) {
+      if (!row) {
         throw new Error('User not found');
       }
 
+      const user = toUser(row);
+
       user.role = newRole;
       user.updatedAt = new Date();
-      users.set(userId, user);
+
+      await db.run(
+        'UPDATE users SET role = ?, updated_at = ? WHERE id = ?',
+        user.role,
+        user.updatedAt.toISOString(),
+        user.id
+      );
 
       logger.info(`User role updated: ${user.email} -> ${newRole}`);
 

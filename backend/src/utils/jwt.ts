@@ -1,15 +1,15 @@
 import jwt from 'jsonwebtoken';
 import { environment } from '../config/environment';
-import { AuthPayload, TokenResponse } from '../types';
+import { AuthPayload } from '../types';
 import { logger } from './logger';
 
 export class JwtService {
   generateAccessToken(payload: AuthPayload): string {
     try {
-      const token = jwt.sign(payload, environment.jwt.secret, {
-        expiresIn: environment.jwt.expiry,
+      const token = jwt.sign(payload, environment.jwt.secret as jwt.Secret, {
+        expiresIn: environment.jwt.expiry as jwt.SignOptions['expiresIn'],
         algorithm: 'HS256',
-      });
+      } as jwt.SignOptions);
       return token;
     } catch (error) {
       logger.error('Error generating access token', error);
@@ -19,10 +19,10 @@ export class JwtService {
 
   generateRefreshToken(payload: AuthPayload): string {
     try {
-      const token = jwt.sign(payload, environment.jwt.refreshSecret, {
-        expiresIn: environment.jwt.refreshExpiry,
+      const token = jwt.sign(payload, environment.jwt.refreshSecret as jwt.Secret, {
+        expiresIn: environment.jwt.refreshExpiry as jwt.SignOptions['expiresIn'],
         algorithm: 'HS256',
-      });
+      } as jwt.SignOptions);
       return token;
     } catch (error) {
       logger.error('Error generating refresh token', error);

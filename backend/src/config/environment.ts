@@ -27,7 +27,7 @@ export const environment = {
   },
 
   database: {
-    url: process.env.DATABASE_URL || 'sqlite:database.db',
+    url: process.env.DATABASE_URL || 'sqlite:sqlite.db',
   },
 
   logging: {

@@ -3,7 +3,6 @@ import cors from 'cors';
 import bodyParser from 'body-parser';
 import { environment } from './config/environment';
 import { logger } from './utils/logger';
-import { authMiddleware } from './middleware/auth';
 import authRoutes from './routes/auth.routes';
 import studyRoutes from './routes/study.routes';
 
@@ -69,8 +68,8 @@ export const createApp = (): Express => {
   // Routes: Authentication
   app.use('/api/auth', authRoutes);
 
-  // Routes: Study Materials (with authentication)
-  app.use('/api/study', authMiddleware, studyRoutes);
+  // Routes: Study Materials
+  app.use('/api/study', studyRoutes);
 
   // Middleware: 404 handler
   app.use((req: Request, res: Response) => {

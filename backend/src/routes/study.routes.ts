@@ -1,11 +1,11 @@
 import { Router, Request, Response } from 'express';
-import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth';
+import { authMiddleware } from '../middleware/auth';
 import { authorize } from '../middleware/authorization';
 import { studyService } from '../services/study.service';
 import { logger } from '../utils/logger';
 import { StudyMaterialRequest } from '../types';
 
-const router = Router();
+const router: Router = Router();
 
 /**
  * POST /study/generate
@@ -136,9 +136,18 @@ router.get(
   authMiddleware,
   async (req: Request, res: Response) => {
     try {
-      const { id } = req.params;
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      if (!id) {
+        res.status(400).json({
+          success: false,
+          error: 'Material id is required',
+          statusCode: 400,
+          timestamp: new Date(),
+        });
+        return;
+      }
 
-      const material = await studyService.getStudyMaterial(id);
+      const material = await studyService.getStudyMaterial(id, req.user!.userId);
 
       if (!material) {
         res.status(404).json({
@@ -179,9 +188,18 @@ router.delete(
   authMiddleware,
   async (req: Request, res: Response) => {
     try {
-      const { id } = req.params;
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      if (!id) {
+        res.status(400).json({
+          success: false,
+          error: 'Material id is required',
+          statusCode: 400,
+          timestamp: new Date(),
+        });
+        return;
+      }
 
-      const deleted = await studyService.deleteStudyMaterial(id);
+      const deleted = await studyService.deleteStudyMaterial(id, req.user!.userId);
 
       if (!deleted) {
         res.status(404).json({

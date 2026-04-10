@@ -4,9 +4,30 @@ import { logger } from '../utils/logger';
 import { StudyMaterialRequest, StreamChunk, StudyMaterialResponse } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { Readable } from 'stream';
+import { getDb } from '../config/database';
 
-// In-memory storage for study materials (replace with DB in production)
-const studyMaterials: Map<string, StudyMaterialResponse> = new Map();
+type StudyMaterialRow = {
+  id: string;
+  user_id: string;
+  question: string;
+  content: string;
+  summary: string;
+  diagrams: string | null;
+  created_at: string;
+  processed_at: string;
+};
+
+function toStudyMaterial(row: StudyMaterialRow): StudyMaterialResponse {
+  return {
+    id: row.id,
+    question: row.question,
+    content: row.content,
+    summary: row.summary,
+    diagrams: row.diagrams ? JSON.parse(row.diagrams) : [],
+    createdAt: new Date(row.created_at),
+    processedAt: new Date(row.processed_at),
+  };
+}
 
 export class StudyService {
   /**
@@ -24,54 +45,88 @@ export class StudyService {
       question: request.question,
     });
 
-    return new Readable({
-      async read() {
-        try {
-          // Send request to Python engine
-          const pythonEngineUrl = `${environment.pythonEngine.url}/generate`;
+    const output = new Readable({ read() {} });
 
-          logger.debug(`Calling Python engine at: ${pythonEngineUrl}`);
+    setImmediate(async () => {
+      try {
+        const pythonEngineUrl = `${environment.pythonEngine.url}/generate`;
+        logger.debug(`Calling Python engine at: ${pythonEngineUrl}`);
 
-          const response = await axios.get(pythonEngineUrl, {
-            params: {
-              question: request.question,
-              include_research: request.includeResearch !== false,
-              include_diagrams: request.includeDiagrams !== false,
-            },
-            timeout: environment.pythonEngine.timeout,
-            responseType: 'stream',
-          });
+        const response = await axios.get(pythonEngineUrl, {
+          params: {
+            question: request.question,
+            include_research: request.includeResearch !== false,
+            include_diagrams: request.includeDiagrams !== false,
+          },
+          timeout: environment.pythonEngine.timeout,
+          responseType: 'stream',
+        });
 
-          // Stream the response back to client
-          response.data.on('data', (chunk: Buffer) => {
+        let buffer = '';
+        let generatedText = '';
+
+        response.data.on('data', (chunk: Buffer) => {
+          buffer += chunk.toString('utf-8');
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line) {
+              continue;
+            }
+
             try {
-              const data = JSON.parse(chunk.toString('utf-8'));
+              const data = JSON.parse(line) as {
+                type?: StreamChunk['type'];
+                data?: unknown;
+                progress?: number;
+              };
+
+              if (
+                data.type === 'generating' &&
+                data.data &&
+                typeof data.data === 'object' &&
+                'content' in (data.data as Record<string, unknown>)
+              ) {
+                const content = (data.data as { content?: unknown }).content;
+                if (typeof content === 'string') {
+                  generatedText += content;
+                }
+              }
 
               const streamChunk: StreamChunk = {
                 type: data.type || 'generating',
-                data: data.data || data,
+                data: data.data ?? data,
                 progress: data.progress,
                 timestamp: new Date(),
               };
-
-              this.push(JSON.stringify(streamChunk) + '\n');
-            } catch (parseError) {
-              logger.debug('Could not parse chunk as JSON, treating as text', {
-                chunk: chunk.toString('utf-8').substring(0, 100),
-              });
-              // Send raw text as a generating chunk
+              output.push(JSON.stringify(streamChunk) + '\n');
+            } catch {
+              generatedText += line + '\n';
               const streamChunk: StreamChunk = {
                 type: 'generating',
-                data: chunk.toString('utf-8'),
+                data: line,
                 timestamp: new Date(),
               };
-              this.push(JSON.stringify(streamChunk) + '\n');
+              output.push(JSON.stringify(streamChunk) + '\n');
             }
-          });
+          }
+        });
 
-          response.data.on('end', () => {
+        response.data.on('end', async () => {
+          try {
+            if (buffer.trim()) {
+              generatedText += buffer;
+            }
+
+            const summary = generatedText
+              ? generatedText.slice(0, 280)
+              : `Study material for: ${request.question}`;
+
+            await this.saveStudyMaterial(materialId, userId, generatedText || request.question, summary, request);
+
             logger.info(`Study material generation completed: ${materialId}`);
-
             const completeChunk: StreamChunk = {
               type: 'complete',
               data: {
@@ -81,58 +136,75 @@ export class StudyService {
               timestamp: new Date(),
             };
 
-            this.push(JSON.stringify(completeChunk) + '\n');
-            this.push(null); // End stream
-          });
-
-          response.data.on('error', (error: any) => {
-            logger.error(`Stream error in material generation: ${materialId}`, error);
-
+            output.push(JSON.stringify(completeChunk) + '\n');
+            output.push(null);
+          } catch (error) {
+            logger.error(`Error finalizing material generation: ${materialId}`, error);
             const errorChunk: StreamChunk = {
               type: 'error',
               data: {
                 id: materialId,
-                error: error.message || 'Stream error occurred',
+                error: 'Failed to persist generated material',
               },
               timestamp: new Date(),
             };
+            output.push(JSON.stringify(errorChunk) + '\n');
+            output.push(null);
+          }
+        });
 
-            this.push(JSON.stringify(errorChunk) + '\n');
-            this.push(null);
-          });
-        } catch (error) {
-          logger.error(`Error in study material generation: ${materialId}`, error);
-
-          const errorMessage = error instanceof AxiosError ? error.message : 'Unknown error';
+        response.data.on('error', (error: Error) => {
+          logger.error(`Stream error in material generation: ${materialId}`, error);
           const errorChunk: StreamChunk = {
             type: 'error',
             data: {
               id: materialId,
-              error: errorMessage,
+              error: error.message || 'Stream error occurred',
             },
             timestamp: new Date(),
           };
 
-          this.push(JSON.stringify(errorChunk) + '\n');
-          this.push(null);
-        }
-      },
+          output.push(JSON.stringify(errorChunk) + '\n');
+          output.push(null);
+        });
+      } catch (error) {
+        logger.error(`Error in study material generation: ${materialId}`, error);
+        const errorMessage = error instanceof AxiosError ? error.message : 'Unknown error';
+        const errorChunk: StreamChunk = {
+          type: 'error',
+          data: {
+            id: materialId,
+            error: errorMessage,
+          },
+          timestamp: new Date(),
+        };
+
+        output.push(JSON.stringify(errorChunk) + '\n');
+        output.push(null);
+      }
     });
+
+    return output;
   }
 
   /**
    * Get study material by ID
    */
-  async getStudyMaterial(materialId: string): Promise<StudyMaterialResponse | null> {
+  async getStudyMaterial(materialId: string, userId: string): Promise<StudyMaterialResponse | null> {
     try {
-      const material = studyMaterials.get(materialId);
+      const db = await getDb();
+      const row = await db.get<StudyMaterialRow>(
+        'SELECT * FROM study_materials WHERE id = ? AND user_id = ?',
+        materialId,
+        userId
+      );
 
-      if (!material) {
+      if (!row) {
         logger.warn(`Study material not found: ${materialId}`);
         return null;
       }
 
-      return material;
+      return toStudyMaterial(row);
     } catch (error) {
       logger.error('Error retrieving study material', error);
       throw error;
@@ -144,11 +216,13 @@ export class StudyService {
    */
   async saveStudyMaterial(
     materialId: string,
+    userId: string,
     content: string,
     summary: string,
     request: StudyMaterialRequest
   ): Promise<StudyMaterialResponse> {
     try {
+      const db = await getDb();
       const material: StudyMaterialResponse = {
         id: materialId,
         question: request.question,
@@ -159,7 +233,18 @@ export class StudyService {
         processedAt: new Date(),
       };
 
-      studyMaterials.set(materialId, material);
+      await db.run(
+        `INSERT INTO study_materials (id, user_id, question, content, summary, diagrams, created_at, processed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        material.id,
+        userId,
+        material.question,
+        material.content,
+        material.summary,
+        JSON.stringify(material.diagrams || []),
+        material.createdAt.toISOString(),
+        material.processedAt.toISOString()
+      );
 
       logger.info(`Study material saved: ${materialId}`);
 
@@ -182,20 +267,35 @@ export class StudyService {
     pagination: { page: number; limit: number; total: number; pages: number };
   }> {
     try {
-      const allMaterials = Array.from(studyMaterials.values());
+      const db = await getDb();
+      const safePage = Math.max(page, 1);
+      const safeLimit = Math.max(limit, 1);
+      const offset = (safePage - 1) * safeLimit;
 
-      const total = allMaterials.length;
-      const pages = Math.ceil(total / limit);
-      const start = (page - 1) * limit;
-      const end = start + limit;
+      const countRow = await db.get<{ total: number }>(
+        'SELECT COUNT(*) as total FROM study_materials WHERE user_id = ?',
+        userId
+      );
+      const total = countRow?.total || 0;
 
-      const data = allMaterials.slice(start, end);
+      const rows = await db.all<StudyMaterialRow[]>(
+        `SELECT * FROM study_materials
+         WHERE user_id = ?
+         ORDER BY created_at DESC
+         LIMIT ? OFFSET ?`,
+        userId,
+        safeLimit,
+        offset
+      );
+
+      const data = rows.map(toStudyMaterial);
+      const pages = Math.ceil(total / safeLimit);
 
       return {
         data,
         pagination: {
-          page,
-          limit,
+          page: safePage,
+          limit: safeLimit,
           total,
           pages,
         },
@@ -209,9 +309,15 @@ export class StudyService {
   /**
    * Delete study material by ID
    */
-  async deleteStudyMaterial(materialId: string): Promise<boolean> {
+  async deleteStudyMaterial(materialId: string, userId: string): Promise<boolean> {
     try {
-      const deleted = studyMaterials.delete(materialId);
+      const db = await getDb();
+      const result = await db.run(
+        'DELETE FROM study_materials WHERE id = ? AND user_id = ?',
+        materialId,
+        userId
+      );
+      const deleted = (result.changes || 0) > 0;
 
       if (deleted) {
         logger.info(`Study material deleted: ${materialId}`);
