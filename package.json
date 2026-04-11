@@ -1,0 +1,9 @@
+{
+  "name": "study-material-maker-workspace",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "install:workspace": "powershell -ExecutionPolicy Bypass -File ./scripts/workspace-install.ps1",
+    "run:workspace": "powershell -ExecutionPolicy Bypass -File ./scripts/workspace-run.ps1"
+  }
+}

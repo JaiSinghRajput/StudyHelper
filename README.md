@@ -22,6 +22,30 @@ An intelligent study material generator that uses AI and web research to create 
 
 ## Installation
 
+## Workspace Setup (Root Level)
+
+From the repository root, run:
+
+```bash
+npm run install:workspace
+```
+
+This command will:
+- Create `backend/.env` from `backend/.env.example` if missing
+- Create `engine/.env` from `engine/.env.example` if missing
+- Install backend dependencies
+- Install web dependencies
+- Sync engine dependencies with `uv`
+
+To run the workspace from root:
+
+```bash
+npm run run:workspace
+```
+
+This launches backend and web dev servers in separate terminal windows.
+The Python engine service should be running on the URL configured in `backend/.env` (default: `http://localhost:8000`).
+
 ### 1. Clone or download the project
 
 ```bash
